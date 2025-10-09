@@ -121,7 +121,11 @@ class B3Spline:
         return self.model.eval(positions_t, derivative=derivative)
 
     def moving_frame(
-        self, positions: np.ndarray, method: str = "bishop", atol: float = 1e-6
+        self,
+        positions: np.ndarray,
+        method: str = "bishop",
+        initial_vector: np.ndarray | None = None,
+        atol: float = 1e-6,
     ):
         """Generate a moving frame long the spline at specified positions.
 
@@ -133,6 +137,11 @@ class B3Spline:
         method : str
             The method to use for generating the moving frame.
             Default value is "bishop".
+        initial_vector : Optional[np.ndarray]
+            For the Bishop frame, an initial vector that is orthogonal
+            to the tangent vector at position 0. This vector determines
+            the initial orientation of the basis, which is propagated
+            along the curve without twisting.
         atol : float
             The absolute tolerance for converting the normalized
             evaluation positions to positions along the spline.
@@ -142,7 +151,9 @@ class B3Spline:
         positions_t = self.model.arc_length_to_parameter(
             positions * self.arc_length, atol=atol
         )
-        return self.model.moving_frame(positions_t, method=method)
+        return self.model.moving_frame(
+            positions_t, method=method, initial_vector=initial_vector
+        )
 
     def sample_volume_2d(
         self,
@@ -151,6 +162,7 @@ class B3Spline:
         grid_shape: tuple[int, int] = (10, 10),
         grid_spacing: tuple[float, float] = (1, 1),
         moving_frame_method: str = "bishop",
+        moving_frame_initial_vector: np.ndarray | None = None,
         sample_interpolation_order: int = 3,
         sample_fill_value: float = np.nan,
         image_voxel_size_um: tuple[float, float, float] = (1, 1, 1),
@@ -174,6 +186,12 @@ class B3Spline:
         moving_frame_method : str
             The method to use for generating the moving frame.
             Default value is "bishop".
+        moving_frame_initial_vector : Optional[np.ndarray]
+            For the Bishop frame, an initial vector that is orthogonal to the tangent
+            vector at `t[0]`. This vector determines the initial orientation of the
+            basis, which is propagated along the curve without twisting. If None,
+            the method computes a suitable initial vector automatically. This
+            parameter is ignored when :code:`method="frenet"`.
         sample_interpolation_order : int
             The order of the spline interpolation to use when sampling the image.
             Default value is 3.
@@ -188,8 +206,17 @@ class B3Spline:
             If False, use the exact method.
             Default is False.
         """
+        if moving_frame_initial_vector is not None and moving_frame_method != "bishop":
+            logger.warning(
+                "moving_frame_initial_vector is only used when "
+                'moving_frame_method is "bishop". Ignoring.'
+            )
+            moving_frame_initial_vector = None
+
         moving_frame = self.moving_frame(
-            positions=positions, method=moving_frame_method
+            positions=positions,
+            method=moving_frame_method,
+            initial_vector=moving_frame_initial_vector,
         )
 
         # generate the grid of points for sampling the image
