@@ -39,6 +39,9 @@ def skeleton_graph_encoder(object_to_encode):
     if isinstance(object_to_encode, dict):
         # Apply encoder recursively to all key-value pairs
         return {k: skeleton_graph_encoder(v) for k, v in object_to_encode.items()}
+    elif isinstance(object_to_encode, (list | tuple)):
+        # Apply recursively to list or tuple elements
+        return [skeleton_graph_encoder(v) for v in object_to_encode]
     elif isinstance(object_to_encode, np.ndarray):
         return object_to_encode.tolist()
     elif isinstance(object_to_encode, SplineboxSpline):
