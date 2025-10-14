@@ -36,13 +36,7 @@ def skeleton_graph_encoder(object_to_encode):
     This function is to be used with the Python json.dump(s) functions
     as the `default` keyword argument.
     """
-    if isinstance(object_to_encode, dict):
-        # Apply encoder recursively to all key-value pairs
-        return {k: skeleton_graph_encoder(v) for k, v in object_to_encode.items()}
-    elif isinstance(object_to_encode, (list | tuple)):
-        # Apply recursively to list or tuple elements
-        return [skeleton_graph_encoder(v) for v in object_to_encode]
-    elif isinstance(object_to_encode, np.ndarray):
+    if isinstance(object_to_encode, np.ndarray):
         return object_to_encode.tolist()
     elif isinstance(object_to_encode, SplineboxSpline):
         spline_dict = object_to_encode._to_dict(version=2)
@@ -54,6 +48,38 @@ def skeleton_graph_encoder(object_to_encode):
         return spline_dict
     elif isinstance(object_to_encode, B3Spline):
         return object_to_encode.to_json_dict()
+    raise TypeError(f"Object of type {type(object_to_encode)} is not JSON serializable")
+
+
+def skeleton_graph_encoder_direct(object_to_encode):
+    """Fully recursive encoder for SkeletonGraph objects, for direct calls."""
+    if object_to_encode is None or isinstance(
+        object_to_encode, (str | int | float | bool)
+    ):
+        return object_to_encode
+
+    elif isinstance(object_to_encode, np.ndarray):
+        return object_to_encode.tolist()
+
+    elif isinstance(object_to_encode, SplineboxSpline):
+        spline_dict = object_to_encode._to_dict(version=2)
+        if "__class__" in spline_dict:
+            raise ValueError(
+                "The Spline object to encode already has a '__class__' key."
+            )
+        spline_dict.update({"__class__": "splinebox.Spline"})
+        return spline_dict
+    elif isinstance(object_to_encode, B3Spline):
+        return object_to_encode.to_json_dict()
+
+    elif isinstance(object_to_encode, dict):
+        return {
+            k: skeleton_graph_encoder_direct(v) for k, v in object_to_encode.items()
+        }
+
+    elif isinstance(object_to_encode, (list | tuple)):
+        return [skeleton_graph_encoder_direct(v) for v in object_to_encode]
+
     raise TypeError(f"Object of type {type(object_to_encode)} is not JSON serializable")
 
 
@@ -425,7 +451,7 @@ class SkeletonGraph:
             "voxel_size_um": self.voxel_size_um,
         }
 
-        object_dict_serializable = skeleton_graph_encoder(object_dict)
+        object_dict_serializable = skeleton_graph_encoder_direct(object_dict)
         return [object_dict_serializable]
 
     def to_json_file(self, file_path: str):
