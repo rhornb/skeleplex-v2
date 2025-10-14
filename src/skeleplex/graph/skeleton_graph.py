@@ -24,6 +24,7 @@ from skeleplex.graph.constants import (
     SISTER_EDGE_KEY,
 )
 from skeleplex.graph.image_to_graph import image_to_graph_skan
+from skeleplex.graph.skeleton_graph import SkeletonGraph
 from skeleplex.graph.spline import B3Spline
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,10 @@ def skeleton_graph_encoder(object_to_encode):
     This function is to be used with the Python json.dump(s) functions
     as the `default` keyword argument.
     """
-    if isinstance(object_to_encode, np.ndarray):
+    if isinstance(object_to_encode, dict):
+        # Apply encoder recursively to all key-value pairs
+        return {k: skeleton_graph_encoder(v) for k, v in object_to_encode.items()}
+    elif isinstance(object_to_encode, np.ndarray):
         return object_to_encode.tolist()
     elif isinstance(object_to_encode, SplineboxSpline):
         spline_dict = object_to_encode._to_dict(version=2)
@@ -236,8 +240,6 @@ def sample_slices_for_edge(
     volume_path,
     segmentation_path,
     positions,
-    moving_frame_method,
-    moving_frame_initial_vector,
     slice_size,
     pixel_size,
     interpolation_order,
@@ -262,12 +264,6 @@ def sample_slices_for_edge(
         The path to the segmentation to sample from.
     positions : np.ndarray
         The positions to sample from.
-    moving_frame_method : str
-        The method to use for generating the moving frame.
-    moving_frame_initial_vector : np.ndarray | None
-        The initial vector that is orthogonal to the tangent vector
-        at position 0. This vector determines the initial orientation
-        of the basis, which is propagated along the curve without twisting.
     slice_size : int
         The size of the slices to sample.
     pixel_size : float
@@ -294,8 +290,6 @@ def sample_slices_for_edge(
         positions,
         grid_shape=(slice_size, slice_size),
         grid_spacing=(pixel_size, pixel_size),
-        moving_frame_method=moving_frame_method,
-        moving_frame_initial_vector=moving_frame_initial_vector,
         sample_interpolation_order=interpolation_order,
         sample_fill_value=0,
         image_voxel_size_um=image_voxel_size_um,
@@ -310,8 +304,6 @@ def sample_slices_for_edge(
             positions,
             grid_shape=(slice_size, slice_size),
             grid_spacing=(pixel_size, pixel_size),
-            moving_frame_method=moving_frame_method,
-            moving_frame_initial_vector=moving_frame_initial_vector,
             sample_interpolation_order=0,
             image_voxel_size_um=image_voxel_size_um,
             sample_fill_value=0,
@@ -417,19 +409,26 @@ class SkeletonGraph:
             edge_splines[(edge_start, edge_end)] = edge_data[EDGE_SPLINE_KEY]
         return edge_splines
 
+    def to_skeleton_serializable(skeleton_graph: SkeletonGraph) -> list:
+        """Convert SkeletonGraph to serializable format."""
+        graph_dict = nx.node_link_data(skeleton_graph.graph, edges="edges")
+
+        # if one of the attributes is not None, add it to the dict
+        # if not add a placeholder
+        object_dict = {
+            "graph": graph_dict,
+            "origin": skeleton_graph.origin,
+            "image_path": skeleton_graph.image_path,
+            "image_key": skeleton_graph.image_key,
+            "voxel_size_um": skeleton_graph.voxel_size_um,
+        }
+
+        object_dict_serializable = skeleton_graph_encoder(object_dict)
+        return [object_dict_serializable]
+
     def to_json_file(self, file_path: str):
         """Return a JSON representation of the graph."""
         graph_dict = nx.node_link_data(self.graph, edges="edges")
-        # if one of the attributes is not None, add it to the dict
-        # if not add a placeholder
-
-        object_dict = {
-            "graph": graph_dict,
-            "origin": self.origin,
-            "image_path": self.image_path,
-            "image_key": self.image_key,
-            "voxel_size_um": self.voxel_size_um,
-        }
         # if one of the attributes is not None, add it to the dict
         # if not add a placeholder
 
@@ -574,9 +573,6 @@ class SkeletonGraph:
         volume: np.ndarray,
         slice_spacing: float,
         slice_size: int,
-        position_limits: tuple[float, float] = (0.1, 0.9),
-        moving_frame_method: str = "bishop",
-        moving_frame_initial_vector: np.ndarray | None = None,
         interpolation_order: int = 3,
         max_generation: int | None = None,
         segmentation: np.ndarray | None = None,
@@ -592,19 +588,6 @@ class SkeletonGraph:
             The spacing between slices. Normalized between 0 and 1.
         slice_size : int
             The size of the slices in pixels.
-        position_limits : tuple(float, float)
-            The lower and upper limit of the normalized position along the spline
-            to sample slices from.
-        moving_frame_method : str
-            The method to use for generating the moving frame.
-            Default is "bishop".
-        moving_frame_initial_vector : np.ndarray | None
-            For the Bishop frame, an initial vector that is orthogonal
-            to the tangent vector at position 0. This vector determines
-            the initial orientation of the basis, which is propagated
-            along the curve without twisting. If None, the method computes
-            a suitable initial vector automatically. This parameter is
-            ignored when `moving_frame_method="frenet"`.
         interpolation_order : int
             The order of the interpolation to use for the spline.
             For labels use 0
@@ -659,17 +642,12 @@ class SkeletonGraph:
             if max_generation and (generation_dict[(u, v)] >= max_generation):
                 break
             spline = spline_dict[(u, v)]
-            lower, upper = position_limits
-            positions = np.linspace(
-                lower, upper, np.ceil(1 / slice_spacing).astype(int)
-            )
+            positions = np.linspace(0.1, 0.9, np.ceil(1 / slice_spacing).astype(int))
             image_slice = spline.sample_volume_2d(
                 volume,
                 positions,
                 grid_shape=(slice_size, slice_size),
                 grid_spacing=(pixel_size, pixel_size),
-                moving_frame_method=moving_frame_method,
-                moving_frame_initial_vector=moving_frame_initial_vector,
                 sample_interpolation_order=interpolation_order,
                 image_voxel_size_um=image_voxel_size_um,
                 approx=approx,
@@ -682,8 +660,6 @@ class SkeletonGraph:
                     positions,
                     grid_shape=(slice_size, slice_size),
                     grid_spacing=(pixel_size, pixel_size),
-                    moving_frame_method=moving_frame_method,
-                    moving_frame_initial_vector=moving_frame_initial_vector,
                     sample_interpolation_order=0,
                     image_voxel_size_um=image_voxel_size_um,
                     approx=approx,
@@ -700,9 +676,6 @@ class SkeletonGraph:
         volume_path: da.Array,
         slice_spacing: float,
         slice_size: int,
-        position_limits: tuple[float, float] = (0.1, 0.9),
-        moving_frame_method: str = "bishop",
-        moving_frame_initial_vector: np.ndarray | None = None,
         interpolation_order: int = 3,
         max_generation: int | None = None,
         min_generation: int | None = None,
@@ -723,19 +696,6 @@ class SkeletonGraph:
             The spacing between slices. Normalized between 0 and 1.
         slice_size : int
             The size of the slices in pixels.
-        position_limits : tuple(float, float)
-            The lower and upper limit of the normalized position along the spline
-            to sample slices from.
-        moving_frame_method : str
-            The method to use for generating the moving frame.
-            Default is "bishop".
-        moving_frame_initial_vector : np.ndarray | None
-            For the Bishop frame, an initial vector that is orthogonal
-            to the tangent vector at position 0. This vector determines
-            the initial orientation of the basis, which is propagated
-            along the curve without twisting. If None, the method computes
-            a suitable initial vector automatically. This parameter is
-            ignored when `moving_frame_method="frenet"`.
         interpolation_order : int
             The order of the interpolation to use for the spline.
             For labels use 0
@@ -784,10 +744,7 @@ class SkeletonGraph:
         def process_edge(edge):
             u, v = edge
             spline = spline_dict[(u, v)]
-            lower, upper = position_limits
-            positions = np.linspace(
-                lower, upper, np.ceil(1 / slice_spacing).astype(int)
-            )
+            positions = np.linspace(0.1, 0.9, np.ceil(1 / slice_spacing).astype(int))
             return sample_slices_for_edge(
                 u,
                 v,
@@ -795,8 +752,6 @@ class SkeletonGraph:
                 volume_path,
                 segmentation_path,
                 positions,
-                moving_frame_method,
-                moving_frame_initial_vector,
                 slice_size,
                 pixel_size,
                 interpolation_order,
