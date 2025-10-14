@@ -8,6 +8,7 @@ import dask
 import dask.array as da
 import networkx as nx
 import numpy as np
+import pandas as pd
 from dask import delayed
 from dask.diagnostics import ProgressBar
 from splinebox import Spline as SplineboxSpline
@@ -476,6 +477,28 @@ class SkeletonGraph:
         """Return a SkeletonGraph from a JSON file."""
         with open(file_path) as file:
             object_dict = json.load(file, object_hook=skeleton_graph_decoder)
+        graph = nx.node_link_graph(object_dict["graph"], edges="edges")
+        skeleton_object = cls(graph=graph)
+        # do only if keys exist
+        if "origin" in object_dict:
+            skeleton_object.origin = object_dict["origin"]
+        if "image_path" in object_dict:
+            skeleton_object.image_path = object_dict["image_path"]
+        if "image_key" in object_dict:
+            skeleton_object.image_key = object_dict["image_key"]
+        if "voxel_size_um" in object_dict:
+            voxel_size_um = object_dict["voxel_size_um"]
+            if voxel_size_um:
+                voxel_size_um = tuple(voxel_size_um)
+            skeleton_object.voxel_size_um = voxel_size_um
+
+        return skeleton_object
+
+    @classmethod
+    def from_ngio_json(cls, df: pd.DataFrame, label_index: int):
+        """Return a SkeletonGraph from a JSON-serialised pd.DataFrame."""
+        object_dict = df.loc[label_index].iat[0]
+        object_dict = skeleton_graph_decoder(object_dict)
         graph = nx.node_link_graph(object_dict["graph"], edges="edges")
         skeleton_object = cls(graph=graph)
         # do only if keys exist
