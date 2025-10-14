@@ -24,7 +24,6 @@ from skeleplex.graph.constants import (
     SISTER_EDGE_KEY,
 )
 from skeleplex.graph.image_to_graph import image_to_graph_skan
-from skeleplex.graph.skeleton_graph import SkeletonGraph
 from skeleplex.graph.spline import B3Spline
 
 logger = logging.getLogger(__name__)
@@ -409,18 +408,18 @@ class SkeletonGraph:
             edge_splines[(edge_start, edge_end)] = edge_data[EDGE_SPLINE_KEY]
         return edge_splines
 
-    def to_skeleton_serializable(skeleton_graph: SkeletonGraph) -> list:
+    def to_skeleton_serializable(self) -> list:
         """Convert SkeletonGraph to serializable format."""
-        graph_dict = nx.node_link_data(skeleton_graph.graph, edges="edges")
+        graph_dict = nx.node_link_data(self.graph, edges="edges")
 
         # if one of the attributes is not None, add it to the dict
         # if not add a placeholder
         object_dict = {
             "graph": graph_dict,
-            "origin": skeleton_graph.origin,
-            "image_path": skeleton_graph.image_path,
-            "image_key": skeleton_graph.image_key,
-            "voxel_size_um": skeleton_graph.voxel_size_um,
+            "origin": self.origin,
+            "image_path": self.image_path,
+            "image_key": self.image_key,
+            "voxel_size_um": self.voxel_size_um,
         }
 
         object_dict_serializable = skeleton_graph_encoder(object_dict)
