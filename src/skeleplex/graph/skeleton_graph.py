@@ -270,6 +270,7 @@ def sample_slices_for_edge(
     segmentation_path,
     positions,
     slice_size,
+    moving_frame_initial_vector,
     pixel_size,
     interpolation_order,
     image_voxel_size_um,
@@ -295,6 +296,8 @@ def sample_slices_for_edge(
         The positions to sample from.
     slice_size : int
         The size of the slices to sample.
+    moving_frame_initial_vector : np.ndarray
+        The initial vector for the moving frame.
     pixel_size : float
         The size of the pixels in the volume.
     interpolation_order : int
@@ -319,6 +322,7 @@ def sample_slices_for_edge(
         positions,
         grid_shape=(slice_size, slice_size),
         grid_spacing=(pixel_size, pixel_size),
+        moving_frame_initial_vector=moving_frame_initial_vector,
         sample_interpolation_order=interpolation_order,
         sample_fill_value=0,
         image_voxel_size_um=image_voxel_size_um,
@@ -333,6 +337,7 @@ def sample_slices_for_edge(
             positions,
             grid_shape=(slice_size, slice_size),
             grid_spacing=(pixel_size, pixel_size),
+            moving_frame_initial_vector=moving_frame_initial_vector,
             sample_interpolation_order=0,
             image_voxel_size_um=image_voxel_size_um,
             sample_fill_value=0,
@@ -668,8 +673,10 @@ class SkeletonGraph:
         volume: np.ndarray,
         slice_spacing: float,
         slice_size: int,
+        position_limits: tuple[float, float] = (0.01, 0.99),
         interpolation_order: int = 3,
         max_generation: int | None = None,
+        moving_frame_initial_vector: np.ndarray | None = None,
         segmentation: np.ndarray | None = None,
         approx: bool = False,
     ):
@@ -683,12 +690,20 @@ class SkeletonGraph:
             The spacing between slices. Normalized between 0 and 1.
         slice_size : int
             The size of the slices in pixels.
+        position_limits : tuple(float, float)
+            The limits of the positions to sample from.
+            Normalized between 0 and 1.
+            Default is (0.01, 0.99) to avoid sampling at the very
+            ends of the spline.
         interpolation_order : int
             The order of the interpolation to use for the spline.
             For labels use 0
         max_generation : int
             The maximum generation of the spline to sample.
             If None, all levels are sampled.
+        moving_frame_initial_vector : np.ndarray | None
+            The initial vector to use for the moving frame (Bishop frame).
+            If None, the initial vector is chosen automatically.
         segmentation : np.ndarray | None
             The segmentation to sample slices from.
             If None, only the image is sampled.
@@ -737,7 +752,10 @@ class SkeletonGraph:
             if max_generation and (generation_dict[(u, v)] >= max_generation):
                 break
             spline = spline_dict[(u, v)]
-            positions = np.linspace(0.1, 0.9, np.ceil(1 / slice_spacing).astype(int))
+            lower_p, upper_p = position_limits
+            positions = np.linspace(
+                lower_p, upper_p, np.ceil(1 / slice_spacing).astype(int)
+            )
             image_slice = spline.sample_volume_2d(
                 volume,
                 positions,
@@ -745,6 +763,7 @@ class SkeletonGraph:
                 grid_spacing=(pixel_size, pixel_size),
                 sample_interpolation_order=interpolation_order,
                 image_voxel_size_um=image_voxel_size_um,
+                moving_frame_initial_vector=moving_frame_initial_vector,
                 approx=approx,
             )
             image_slice_dict[(u, v)] = image_slice
@@ -757,6 +776,7 @@ class SkeletonGraph:
                     grid_spacing=(pixel_size, pixel_size),
                     sample_interpolation_order=0,
                     image_voxel_size_um=image_voxel_size_um,
+                    moving_frame_initial_vector=moving_frame_initial_vector,
                     approx=approx,
                 )
                 segmentation_slice_dict[(u, v)] = segmentation_slice
@@ -771,6 +791,8 @@ class SkeletonGraph:
         volume_path: da.Array,
         slice_spacing: float,
         slice_size: int,
+        moving_frame_initial_vector: np.ndarray | None = None,
+        position_limits: tuple[float, float] = (0.01, 0.99),
         interpolation_order: int = 3,
         max_generation: int | None = None,
         min_generation: int | None = None,
@@ -791,6 +813,14 @@ class SkeletonGraph:
             The spacing between slices. Normalized between 0 and 1.
         slice_size : int
             The size of the slices in pixels.
+        moving_frame_initial_vector : np.ndarray | None
+            The initial vector to use for the moving frame (Bishop frame).
+            If None, the initial vector is chosen automatically.
+        position_limits : tuple(float, float)
+            The limits of the positions to sample from.
+            Normalized between 0 and 1.
+            Default is (0.01, 0.99) to avoid sampling at the very
+            ends of the spline.
         interpolation_order : int
             The order of the interpolation to use for the spline.
             For labels use 0
@@ -839,7 +869,10 @@ class SkeletonGraph:
         def process_edge(edge):
             u, v = edge
             spline = spline_dict[(u, v)]
-            positions = np.linspace(0.1, 0.9, np.ceil(1 / slice_spacing).astype(int))
+            lower_p, upper_p = position_limits
+            positions = np.linspace(
+                lower_p, upper_p, np.ceil(1 / slice_spacing).astype(int)
+            )
             return sample_slices_for_edge(
                 u,
                 v,
@@ -848,6 +881,7 @@ class SkeletonGraph:
                 segmentation_path,
                 positions,
                 slice_size,
+                moving_frame_initial_vector,
                 pixel_size,
                 interpolation_order,
                 image_voxel_size_um,
