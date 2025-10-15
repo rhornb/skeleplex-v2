@@ -379,12 +379,14 @@ class SkeletonGraph:
         self,
         graph: nx.Graph,
         origin: int | None = None,
+        initial_vector: np.ndarray | None = None,
         image_path: str | None = None,
         image_key: str | None = None,
         voxel_size_um: float | None = None,
     ):
         self.graph = graph
         self.origin = origin
+        self.initial_vector = initial_vector
         self.image_path = image_path
         self.image_key = image_key
         self.voxel_size_um = voxel_size_um
@@ -438,22 +440,52 @@ class SkeletonGraph:
             edge_splines[(edge_start, edge_end)] = edge_data[EDGE_SPLINE_KEY]
         return edge_splines
 
-    def to_skeleton_serializable(self) -> list:
-        """Convert SkeletonGraph to serializable format."""
+    def to_dataframe(
+        self, df: pd.DataFrame | None = None, index: int = 0
+    ) -> pd.DataFrame:
+        """Return a DataFrame with one row per graph.
+
+        (Instead of writing JSON to file).
+        """
         graph_dict = nx.node_link_data(self.graph, edges="edges")
 
-        # if one of the attributes is not None, add it to the dict
-        # if not add a placeholder
+        # Construct the same dict as in to_json_file
         object_dict = {
             "graph": graph_dict,
             "origin": self.origin,
+            "initial_vector": self.initial_vector,
             "image_path": self.image_path,
             "image_key": self.image_key,
             "voxel_size_um": self.voxel_size_um,
         }
 
-        object_dict_serializable = skeleton_graph_encoder_direct(object_dict)
-        return [object_dict_serializable]
+        # Convert dict to a JSON string if you want to store compactly
+        # (useful if your graphs are large or nested)
+        json_str = json.dumps(object_dict, indent=2, default=skeleton_graph_encoder)
+
+        # Append to dataframe
+        new_row = pd.DataFrame(
+            [
+                {
+                    "json_data": json_str,  # or store raw dict instead
+                    "origin": self.origin,
+                    "initial_vector": self.initial_vector,
+                    "image_path": self.image_path,
+                    "image_key": self.image_key,
+                    "voxel_size_um": self.voxel_size_um,
+                }
+            ]
+        )
+
+        new_row.index.name = "label"
+
+        if df is None:
+            df = new_row
+            df.index = [index]
+        else:
+            df.loc[index] = new_row.iloc[0]
+
+        return df
 
     def to_json_file(self, file_path: str):
         """Return a JSON representation of the graph."""
@@ -464,6 +496,7 @@ class SkeletonGraph:
         object_dict = {
             "graph": graph_dict,
             "origin": self.origin,
+            "initial_vector": self.initial_vector,
             "image_path": self.image_path,
             "image_key": self.image_key,
             "voxel_size_um": self.voxel_size_um,
@@ -482,6 +515,8 @@ class SkeletonGraph:
         # do only if keys exist
         if "origin" in object_dict:
             skeleton_object.origin = object_dict["origin"]
+        if "initial_vector" in object_dict:
+            skeleton_object.initial_vector = object_dict["initial_vector"]
         if "image_path" in object_dict:
             skeleton_object.image_path = object_dict["image_path"]
         if "image_key" in object_dict:
@@ -495,15 +530,24 @@ class SkeletonGraph:
         return skeleton_object
 
     @classmethod
-    def from_ngio_json(cls, df: pd.DataFrame, label_index: int):
-        """Return a SkeletonGraph from a JSON-serialised pd.DataFrame."""
-        object_dict = df.loc[label_index].iat[0]
-        object_dict = skeleton_graph_decoder(object_dict)
+    def from_dataframe(cls, df: pd.DataFrame, index: int):
+        """Return a SkeletonGraph from a DataFrame row containing JSON data."""
+        # Extract JSON string from the specific cell
+        json_str = df.loc[index, "json_data"]
+
+        # Parse the JSON string into a Python dict
+        object_dict = json.loads(json_str, object_hook=skeleton_graph_decoder)
+
+        # Rebuild the graph
         graph = nx.node_link_graph(object_dict["graph"], edges="edges")
         skeleton_object = cls(graph=graph)
+
+        # Restore optional fields
         # do only if keys exist
         if "origin" in object_dict:
             skeleton_object.origin = object_dict["origin"]
+        if "initial_vector" in object_dict:
+            skeleton_object.initial_vector = object_dict["initial_vector"]
         if "image_path" in object_dict:
             skeleton_object.image_path = object_dict["image_path"]
         if "image_key" in object_dict:
