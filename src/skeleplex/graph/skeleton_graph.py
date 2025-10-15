@@ -472,12 +472,7 @@ class SkeletonGraph:
         new_row = pd.DataFrame(
             [
                 {
-                    "json_data": json_str,  # or store raw dict instead
-                    "origin": self.origin,
-                    "initial_vector": self.initial_vector,
-                    "image_path": self.image_path,
-                    "image_key": self.image_key,
-                    "voxel_size_um": self.voxel_size_um,
+                    "json_data": json_str,
                 }
             ]
         )
