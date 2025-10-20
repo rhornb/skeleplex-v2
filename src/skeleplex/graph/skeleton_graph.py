@@ -218,7 +218,7 @@ def orient_splines(graph: nx.DiGraph) -> nx.DiGraph:
 
     If the beginning of the spline is closer to the end node than the start node,
     it gets flipped and vice versa.
-    
+
     Also checks if the edge coordinates are aligned with the spline.
     This only checks, if the splines are correctly connected to the nodes,
     not the order in the Graph. Best used on a directed graph.
@@ -241,20 +241,20 @@ def orient_splines(graph: nx.DiGraph) -> nx.DiGraph:
         spline = attr[EDGE_SPLINE_KEY]
         u_coord = graph.nodes[u][NODE_COORDINATE_KEY]
         v_coord = graph.nodes[v][NODE_COORDINATE_KEY]
-        
+
         # Evaluate spline endpoints
-        spline_start, spline_end = spline.eval(np.array([0, 1]))
+        spline_start, spline_end = spline.eval(np.array([0.01, 0.99]))
 
         # Compute distances from spline endpoints to node positions
         dist_start_to_u = np.linalg.norm(spline_start - u_coord)
         dist_start_to_v = np.linalg.norm(spline_start - v_coord)
         dist_end_to_u = np.linalg.norm(spline_end - u_coord)
         dist_end_to_v = np.linalg.norm(spline_end - v_coord)
-        
+
         # Orientation is correct if start→u and end→v are both closest
         start_correct = dist_start_to_u < dist_start_to_v
         end_correct = dist_end_to_v < dist_end_to_u
-        
+
         # If either endpoint is closer to the wrong node, flip it
         if not (start_correct and end_correct):
             logger.info(f"Flipped spline of edge ({u},{v}).")
