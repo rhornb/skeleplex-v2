@@ -758,7 +758,7 @@ class SkeletonGraph:
                 grid_spacing=(pixel_size, pixel_size),
                 sample_interpolation_order=interpolation_order,
                 image_voxel_size_um=image_voxel_size_um,
-                moving_frame_initial_vector=moving_frame_initial_vector,
+                moving_ame_initial_vector=moving_frame_initial_vector,
                 approx=approx,
             )
             image_slice_dict[(u, v)] = image_slice
