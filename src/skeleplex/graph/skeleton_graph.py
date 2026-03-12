@@ -162,10 +162,12 @@ def make_graph_directed(graph: nx.Graph, origin: int) -> nx.DiGraph:
     else:
         fragments = None
 
-    di_graph = nx.DiGraph(graph)
-    di_graph.remove_edges_from(di_graph.edges - nx.bfs_edges(di_graph, origin))
-
-    if fragments:
+    di_graph = nx.DiGraph()
+    for u, v in nx.bfs_edges(graph, origin):
+        di_graph.add_edge(u, v, **graph[u][v])
+        di_graph.add_node(u, **graph.nodes[u])
+        di_graph.add_node(v, **graph.nodes[v])
+    if fragments is not None:
         # choose a node with the highest degree as the origin node
         # Do this for each fragment
         for fragment in nx.connected_components(fragments):
@@ -174,10 +176,9 @@ def make_graph_directed(graph: nx.Graph, origin: int) -> nx.DiGraph:
             This is arbitrary but finding a better node
             without knowledge were the network broke is hard"""
             origin = max(fragment_subgraph.degree, key=lambda x: x[1])[0]
-            di_fragment = nx.DiGraph(fragment_subgraph)
-            di_fragment.remove_edges_from(
-                di_fragment.edges - nx.bfs_edges(di_fragment, origin)
-            )
+            di_fragment = nx.DiGraph()
+            for u, v in nx.bfs_edges(fragment_subgraph, origin):
+                di_fragment.add_edge(u, v, **fragment_subgraph[u][v])
             di_graph.add_edges_from(di_fragment.edges(data=True))
             di_graph.add_nodes_from(di_fragment.nodes(data=True))
 
@@ -213,7 +214,9 @@ def get_next_node_key(graph: nx.Graph) -> int:
     return free_node
 
 
-def orient_splines(graph: nx.DiGraph) -> nx.DiGraph:
+def orient_splines(
+    graph: nx.DiGraph, approximate_positions: bool = False
+) -> nx.DiGraph:
     """Checks if the splines are oriented correctly.
 
     If the beginning of the spline is closer to the end node than the start node,
@@ -227,6 +230,9 @@ def orient_splines(graph: nx.DiGraph) -> nx.DiGraph:
     ----------
     graph : nx.DiGraph
         The graph to orient the splines in.
+    approximate_positions : bool
+        Whether to use approximate positions for the spline evaluation.
+        This is faster but less accurate. Default is False.
 
     Returns
     -------
@@ -243,7 +249,9 @@ def orient_splines(graph: nx.DiGraph) -> nx.DiGraph:
         v_coord = graph.nodes[v][NODE_COORDINATE_KEY]
 
         # Evaluate spline endpoints
-        spline_start, spline_end = spline.eval(np.array([0.01, 0.99]))
+        spline_start, spline_end = spline.eval(
+            np.array([0.01, 0.99]), approx=approximate_positions
+        )
 
         # Compute distances from spline endpoints to node positions
         dist_start_to_u = np.linalg.norm(spline_start - u_coord)
@@ -271,18 +279,17 @@ def orient_splines(graph: nx.DiGraph) -> nx.DiGraph:
 
 
 def sample_slices_for_edge(
-    u,
-    v,
-    spline,
-    volume_path,
-    segmentation_path,
-    positions,
-    slice_size,
-    moving_frame_initial_vector,
-    pixel_size,
-    interpolation_order,
-    image_voxel_size_um,
-    approx,
+    u: int,
+    v: int,
+    spline: B3Spline,
+    volume_path: str,
+    segmentation_path: str | None,
+    positions: np.ndarray,
+    slice_size_um: float,
+    sample_grid_spacing_um: float,
+    interpolation_order: int,
+    image_voxel_size_um: float,
+    approx: bool,
 ):
     """Helper function for parallel execution.
 
@@ -294,7 +301,7 @@ def sample_slices_for_edge(
         The source node of the edge.
     v : int
         The target node of the edge.
-    spline : Spline
+    spline : B3Spline
         The spline to sample from.
     volume_path : str
         The path to the volume to sample from.
@@ -302,12 +309,10 @@ def sample_slices_for_edge(
         The path to the segmentation to sample from.
     positions : np.ndarray
         The positions to sample from.
-    slice_size : int
-        The size of the slices to sample.
-    moving_frame_initial_vector : np.ndarray
-        The initial vector for the moving frame.
-    pixel_size : float
-        The size of the pixels in the volume.
+    slice_size_um : float
+        The edge width of the slice in microns.
+    sample_grid_spacing_um : float
+        The spacing of the sample points in microns.
     interpolation_order : int
         The order of the interpolation to use.
     image_voxel_size_um : float
@@ -328,9 +333,8 @@ def sample_slices_for_edge(
     image_slice = spline.sample_volume_2d(
         volume,
         positions,
-        grid_shape=(slice_size, slice_size),
-        grid_spacing=(pixel_size, pixel_size),
-        moving_frame_initial_vector=moving_frame_initial_vector,
+        grid_shape_um=(slice_size_um, slice_size_um),
+        grid_spacing_um=(sample_grid_spacing_um, sample_grid_spacing_um),
         sample_interpolation_order=interpolation_order,
         sample_fill_value=0,
         image_voxel_size_um=image_voxel_size_um,
@@ -343,9 +347,8 @@ def sample_slices_for_edge(
         segmentation_slice = spline.sample_volume_2d(
             segmentation,
             positions,
-            grid_shape=(slice_size, slice_size),
-            grid_spacing=(pixel_size, pixel_size),
-            moving_frame_initial_vector=moving_frame_initial_vector,
+            grid_shape_um=(slice_size_um, slice_size_um),
+            grid_spacing_um=(sample_grid_spacing_um, sample_grid_spacing_um),
             sample_interpolation_order=0,
             image_voxel_size_um=image_voxel_size_um,
             sample_fill_value=0,
@@ -500,6 +503,8 @@ class SkeletonGraph:
         graph_dict = nx.node_link_data(self.graph, edges="edges")
         # if one of the attributes is not None, add it to the dict
         # if not add a placeholder
+        # if one of the attributes is not None, add it to the dict
+        # if not add a placeholder
 
         object_dict = {
             "graph": graph_dict,
@@ -523,16 +528,14 @@ class SkeletonGraph:
         # do only if keys exist
         if "origin" in object_dict:
             skeleton_object.origin = object_dict["origin"]
-        if "initial_vector" in object_dict:
-            skeleton_object.initial_vector = object_dict["initial_vector"]
         if "image_path" in object_dict:
             skeleton_object.image_path = object_dict["image_path"]
         if "image_key" in object_dict:
             skeleton_object.image_key = object_dict["image_key"]
         if "voxel_size_um" in object_dict:
             voxel_size_um = object_dict["voxel_size_um"]
-            if voxel_size_um:
-                voxel_size_um = tuple(voxel_size_um)
+            if isinstance(voxel_size_um, float | int):
+                voxel_size_um = (voxel_size_um, voxel_size_um, voxel_size_um)
             skeleton_object.voxel_size_um = voxel_size_um
 
         return skeleton_object
@@ -562,8 +565,8 @@ class SkeletonGraph:
             skeleton_object.image_key = object_dict["image_key"]
         if "voxel_size_um" in object_dict:
             voxel_size_um = object_dict["voxel_size_um"]
-            if voxel_size_um:
-                voxel_size_um = tuple(voxel_size_um)
+            if isinstance(voxel_size_um, float | int):
+                voxel_size_um = (voxel_size_um, voxel_size_um, voxel_size_um)
             skeleton_object.voxel_size_um = voxel_size_um
 
         return skeleton_object
@@ -598,7 +601,12 @@ class SkeletonGraph:
 
     @classmethod
     def from_graph(
-        cls, graph, edge_coordinate_key, node_coordinate_key
+        cls,
+        graph,
+        edge_coordinate_key,
+        node_coordinate_key,
+        voxel_size_um: float | None = None,
+        scale_to_um: bool = True,
     ) -> "SkeletonGraph":
         """Return a SkeletonGraph from a networkx graph.
 
@@ -615,16 +623,27 @@ class SkeletonGraph:
             The key to use for the edge coordinates.
         node_coordinate_key : str
             The key to use for the node coordinates.
+        voxel_size_um : float | None
+            Spacing of the voxels. Used to transform graph coordinates to um.
+        scale_to_um : bool
+            Whether to scale the coordinates to micrometers using the voxel size.
         """
         graph_mod = graph.copy()
         for _, _, attr in graph_mod.edges(data=True):
-            attr[EDGE_COORDINATES_KEY] = attr.pop(edge_coordinate_key)
+            # attr[EDGE_COORDINATES_KEY] = attr.pop(edge_coordinate_key)
+            edge_coords = attr[edge_coordinate_key]
             # add spline
+            if scale_to_um and voxel_size_um is not None:
+                edge_coords = edge_coords * voxel_size_um
+            attr[EDGE_COORDINATES_KEY] = edge_coords
             spline = B3Spline.from_points(attr[EDGE_COORDINATES_KEY])
             attr[EDGE_SPLINE_KEY] = spline
         for _, node_data in graph_mod.nodes(data=True):
-            node_data[NODE_COORDINATE_KEY] = node_data.pop(node_coordinate_key)
-        return cls(graph=graph_mod)
+            node_coords = node_data.pop(node_coordinate_key)
+            if scale_to_um and voxel_size_um is not None:
+                node_coords = node_coords * voxel_size_um
+            node_data[NODE_COORDINATE_KEY] = node_coords
+        return cls(graph=graph_mod, voxel_size_um=voxel_size_um)
 
     def __eq__(self, other: "SkeletonGraph"):
         """Check if two SkeletonGraph objects are equal."""
@@ -643,6 +662,8 @@ class SkeletonGraph:
         The directed graph has the same nodes and edges as the skeleton graph.
         Stores the origin node as an attribute.
 
+        The directed graph is stored in-place.
+
         Parameters
         ----------
         origin : int
@@ -653,9 +674,20 @@ class SkeletonGraph:
         self.origin = origin
         return self.graph
 
-    def orient_splines(self) -> nx.DiGraph:
-        """Orient the splines in the graph."""
-        self.graph = orient_splines(self.graph)
+    def orient_splines(self, approximate_positions: bool = False) -> nx.DiGraph:
+        """Orient the splines in the graph.
+
+        This modifies the graph in place.
+
+        Parameters
+        ----------
+        approximate_positions : bool
+            Whether to use approximate positions for the spline evaluation.
+            This is faster but less accurate. Default is False.
+        """
+        self.graph = orient_splines(
+            self.graph, approximate_positions=approximate_positions
+        )
         return self.graph
 
     def compute_branch_lengths(self) -> dict:
@@ -675,8 +707,8 @@ class SkeletonGraph:
         self,
         volume: np.ndarray,
         slice_spacing: float,
-        slice_size: int,
-        position_limits: tuple[float, float] = (0.01, 0.99),
+        slice_size_um: float,
+        sample_grid_spacing_um: float,
         interpolation_order: int = 3,
         max_generation: int | None = None,
         moving_frame_initial_vector: np.ndarray | None = None,
@@ -691,13 +723,12 @@ class SkeletonGraph:
             The volume to sample slices from.
         slice_spacing : float
             The spacing between slices. Normalized between 0 and 1.
-        slice_size : int
-            The size of the slices in pixels.
-        position_limits : tuple(float, float)
-            The limits of the positions to sample from.
-            Normalized between 0 and 1.
-            Default is (0.01, 0.99) to avoid sampling at the very
-            ends of the spline.
+        slice_size_um : float
+            The edge length of the slices in microns.
+            The slice is square.
+        sample_grid_spacing_um : float
+            The spacing of the sample points in microns.
+            This is the size of the pixels in microns in the resulting slices.
         interpolation_order : int
             The order of the interpolation to use for the spline.
             For labels use 0
@@ -735,16 +766,13 @@ class SkeletonGraph:
         if not origin and origin != 0:
             raise ValueError("No origin node provided. Please set origin.")
 
-        if not image_voxel_size_um:
+        if image_voxel_size_um is None:
             logger.warning("No voxel size provided. Assuming pixel size is 1 µm.")
             image_voxel_size_um = (1, 1, 1)
 
         graph = self.graph.copy()
         generation_dict = nx.get_edge_attributes(graph, GENERATION_KEY)
         spline_dict = nx.get_edge_attributes(graph, EDGE_SPLINE_KEY)
-
-        # Scale the pixel size to the image voxel size
-        pixel_size = 1 / image_voxel_size_um[0]
 
         image_slice_dict = {}
         segmentation_slice_dict = {}
@@ -755,15 +783,12 @@ class SkeletonGraph:
             if max_generation and (generation_dict[(u, v)] >= max_generation):
                 break
             spline = spline_dict[(u, v)]
-            lower_p, upper_p = position_limits
-            positions = np.linspace(
-                lower_p, upper_p, np.ceil(1 / slice_spacing).astype(int)
-            )
+            positions = np.linspace(0.01, 0.99, np.ceil(1 / slice_spacing).astype(int))
             image_slice = spline.sample_volume_2d(
                 volume,
                 positions,
-                grid_shape=(slice_size, slice_size),
-                grid_spacing=(pixel_size, pixel_size),
+                grid_shape_um=(slice_size_um, slice_size_um),
+                grid_spacing_um=(sample_grid_spacing_um, sample_grid_spacing_um),
                 sample_interpolation_order=interpolation_order,
                 image_voxel_size_um=image_voxel_size_um,
                 moving_frame_initial_vector=moving_frame_initial_vector,
@@ -775,8 +800,8 @@ class SkeletonGraph:
                 segmentation_slice = spline.sample_volume_2d(
                     segmentation,
                     positions,
-                    grid_shape=(slice_size, slice_size),
-                    grid_spacing=(pixel_size, pixel_size),
+                    grid_shape_um=(slice_size_um, slice_size_um),
+                    grid_spacing_um=(sample_grid_spacing_um, sample_grid_spacing_um),
                     sample_interpolation_order=0,
                     image_voxel_size_um=image_voxel_size_um,
                     moving_frame_initial_vector=moving_frame_initial_vector,
@@ -793,9 +818,8 @@ class SkeletonGraph:
         self,
         volume_path: da.Array,
         slice_spacing: float,
-        slice_size: int,
-        moving_frame_initial_vector: np.ndarray | None = None,
-        position_limits: tuple[float, float] = (0.01, 0.99),
+        slice_size_um: float,
+        sample_grid_spacing_um: float,
         interpolation_order: int = 3,
         max_generation: int | None = None,
         min_generation: int | None = None,
@@ -819,11 +843,11 @@ class SkeletonGraph:
         moving_frame_initial_vector : np.ndarray | None
             The initial vector to use for the moving frame (Bishop frame).
             If None, the initial vector is chosen automatically.
-        position_limits : tuple(float, float)
-            The limits of the positions to sample from.
-            Normalized between 0 and 1.
-            Default is (0.01, 0.99) to avoid sampling at the very
-            ends of the spline.
+        slice_size_um : int
+            The edge length slices in microns. The slices are square.
+        sample_grid_spacing_um : float
+            The spacing of the sample points in microns.
+            This is the size of the pixels in microns in the resulting slices.
         interpolation_order : int
             The order of the interpolation to use for the spline.
             For labels use 0
@@ -850,14 +874,12 @@ class SkeletonGraph:
         if not origin and origin != 0:
             raise ValueError("No origin node provided. Please set origin.")
 
-        if not image_voxel_size_um:
+        if image_voxel_size_um is None:
             logger.warning("No voxel size provided. Assuming pixel size is 1 µm.")
             image_voxel_size_um = (1, 1, 1)
 
         generation_dict = nx.get_edge_attributes(self.graph, GENERATION_KEY)
         spline_dict = nx.get_edge_attributes(self.graph, EDGE_SPLINE_KEY)
-
-        pixel_size = 1 / image_voxel_size_um[0]
 
         # Prepare a list of edges to process
         edges_to_process = [
@@ -872,10 +894,7 @@ class SkeletonGraph:
         def process_edge(edge):
             u, v = edge
             spline = spline_dict[(u, v)]
-            lower_p, upper_p = position_limits
-            positions = np.linspace(
-                lower_p, upper_p, np.ceil(1 / slice_spacing).astype(int)
-            )
+            positions = np.linspace(0.01, 0.99, np.ceil(1 / slice_spacing).astype(int))
             return sample_slices_for_edge(
                 u,
                 v,
@@ -883,9 +902,8 @@ class SkeletonGraph:
                 volume_path,
                 segmentation_path,
                 positions,
-                slice_size,
-                moving_frame_initial_vector,
-                pixel_size,
+                slice_size_um,
+                sample_grid_spacing_um,
                 interpolation_order,
                 image_voxel_size_um,
                 approx,

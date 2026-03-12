@@ -2,16 +2,21 @@ import logging  # noqa D100
 
 import networkx as nx
 import numpy as np
-
+import functools
 from skeleplex.graph.constants import (
+    DIAMETER_KEY,
+    TISSUE_THICKNESS_KEY,
     BRANCH_ANGLE_EDGE_KEY,
+    BRANCH_ANGLE_JUNCTION_EDGE_KEY,
     EDGE_SPLINE_KEY,
     LOBE_NAME_KEY,
     NODE_COORDINATE_KEY,
+    PARENT_EDGE_KEY,
     ROTATION_ANGLE_EDGE_KEY,
     SIBLING_ANGLE_EDGE_KEY,
     SISTER_EDGE_KEY,
     SURFACE_ANGLE_EDGE_KEY,
+    ROTATION_ANGLE_VECTOR_EDGE_KEY,
 )
 from skeleplex.measurements.fit_surface import (
     fit_surface_and_get_surface_normal_of_branches,
@@ -22,6 +27,48 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+
+# internal store
+_ANGLE_FUNCTIONS = []
+
+
+def angle_metric(func):
+    """Decorator to register a function as an angle metric."""
+    _ANGLE_FUNCTIONS.append(func)
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def run_all_angle_metrics(graph, **kwargs):
+    """Runs all registered angle metrics in order.
+
+    Each metric must accept a graph, and may accept additional keyword arguments.
+    Returns a list of (name, graph_out, extra_return_values).
+    """
+    results = []
+    g = graph
+    for func in _ANGLE_FUNCTIONS:
+        name = func.__name__
+        logger.info(f"Running angle metric: {name}")
+        out = func(
+            g,
+            **{k: v for k, v in kwargs.items() if k in func.__code__.co_varnames}
+        )
+        # out can be (graph) or (graph, extra)
+        if isinstance(out, tuple):
+            g = out[0]
+            extra = out[1:]
+        else:
+            g = out
+            extra = ()
+        results.append((name, g, *extra))
+    return g, results
+
+@angle_metric
 def compute_midline_branch_angle_branch_nodes(graph: nx.DiGraph):
     """Calculates the midline branch angle for each branch in the graph.
 
@@ -41,6 +88,10 @@ def compute_midline_branch_angle_branch_nodes(graph: nx.DiGraph):
     graph : nx.DiGraph
         The input graph with the angles added as edge attributes
 
+    midline_vector : np.ndarray
+        Array of shape (n_edges, 2, 3) containing the start and end points
+        of the midline vectors for visualization.
+
     Raises
     ------
     ValueError
@@ -52,19 +103,19 @@ def compute_midline_branch_angle_branch_nodes(graph: nx.DiGraph):
         Raises and error if the length of the branch vector is != 1
 
     """
-    tree = graph.copy()
+    graph = graph.copy()
 
     angle_dict = {}
     center_points = []
     midline_points = []
 
-    node_coordinates = nx.get_node_attributes(tree, "node_coordinate")
+    node_coordinates = nx.get_node_attributes(graph, NODE_COORDINATE_KEY)
 
-    for u, v, _ in tree.edges(data=True):
+    for u, v, _ in graph.edges(data=True):
         edge = (u, v)
-        if not list(tree.in_edges(u)):
+        if not list(graph.in_edges(u)):
             continue
-        parent_edge = next(iter(tree.in_edges(u)))
+        parent_edge = next(iter(graph.in_edges(u)))
 
         parent_start_node_coordinates = node_coordinates[parent_edge[0]]
         parent_end_node_coordinates = node_coordinates[parent_edge[1]]
@@ -82,6 +133,9 @@ def compute_midline_branch_angle_branch_nodes(graph: nx.DiGraph):
         end_node_coordinates = node_coordinates[edge[1]]
         branch_vector = unit_vector(end_node_coordinates - start_node_coordinates)
 
+        if np.any(np.isnan(midline_vector)) or np.any(np.isnan(branch_vector)):
+            continue
+
         if round(np.linalg.norm(midline_vector)) != 1:
             raise ValueError(f"""Midline vector is not normalized.
                              Its length is {np.linalg.norm(midline_vector)}""")
@@ -91,28 +145,25 @@ def compute_midline_branch_angle_branch_nodes(graph: nx.DiGraph):
 
         dot = np.dot(midline_vector, branch_vector)
         angle = np.degrees(np.arccos(dot))
-        # center around 90 degrees
-        # angle = np.abs(angle -90)
-        if angle > 90:
-            angle = angle - 90
-
         angle_dict[edge] = angle
 
         # store for visualization
         center_points.append(parent_end_node_coordinates)
         midline_points.append(parent_end_node_coordinates + (50 * midline_vector))
 
-    nx.set_edge_attributes(tree, angle_dict, BRANCH_ANGLE_EDGE_KEY)
+    nx.set_edge_attributes(graph, angle_dict, BRANCH_ANGLE_EDGE_KEY)
+    midline_vector = np.array(np.stack([center_points, midline_points], axis=1))
 
-    return tree, center_points, midline_points
+    return graph, midline_vector
 
 
+@angle_metric
 def compute_midline_branch_angle_spline(
-    graph: nx.DiGraph, n_samples: int, approx=False
+    graph: nx.DiGraph, sample_positions: np.ndarray, approx=False
 ):
     """Calculates the midline branch angle for each branch in the graph.
 
-    Computes the midline anlges for each branch in the graph and returns
+    Computes the midline angles for each branch in the graph and returns
     the midline branch angle as an edge attribute.
 
     To compute the vectors, the spline is used to sample points along the
@@ -129,8 +180,8 @@ def compute_midline_branch_angle_spline(
     ----------
     graph : nx.DiGraph
         The input graph
-    n_samples : int
-        The number of samples to take along the spline
+    sample_positions : np.array
+        List of positions along the spline to sample the tangents
     approx : bool
         If True, evaluate the spline using an approximation
 
@@ -138,6 +189,9 @@ def compute_midline_branch_angle_spline(
     -------
     graph : nx.DiGraph
         The input graph with the angles added as edge attributes
+    sample_position_list: list
+        Returns the position on which the tangents of the spline were taken.
+        For debugging purposes.
 
     Raises
     ------
@@ -152,6 +206,7 @@ def compute_midline_branch_angle_spline(
     """
     graph = graph.copy()
     angle_dict = {}
+    sample_positions_list = []
     # loop over each edge
     for u, v in graph.edges():
         edge = (u, v)
@@ -161,11 +216,15 @@ def compute_midline_branch_angle_spline(
         parent_edge = parent_edge[0]
         parent_spline = graph.edges[parent_edge][EDGE_SPLINE_KEY]
         spline = graph.edges[edge][EDGE_SPLINE_KEY]
-        sample_positions = np.linspace(0, 1, n_samples)
+        # sample_positions = np.linspace(0, 1, n_samples)
         parent_tangents = parent_spline.eval(
-            sample_positions, derivative=1, approx=approx
+            1 - sample_positions, derivative=1, approx=approx
+        )
+        sample_positions_list.append(
+            parent_spline.eval(1 - sample_positions, approx=approx)
         )
         tangents = spline.eval(sample_positions, derivative=1, approx=approx)
+        sample_positions_list.append(spline.eval(sample_positions, approx=approx))
         # normalize the tangents
         tangents = [unit_vector(t) for t in tangents]
         parent_tangents = [unit_vector(t) for t in parent_tangents]
@@ -178,17 +237,16 @@ def compute_midline_branch_angle_spline(
             pt = parent_tangents[j]
             dot = np.dot(t, pt)
             angle = np.degrees(np.arccos(dot))
-            # center around 90 deg
-            # angle =np.abs(angle - 90)
+
             angle_list.append(angle)
         # angle_std = np.std(angle_list)
         mean_angle = np.mean(angle_list)
         angle_dict[edge] = mean_angle
 
-    nx.set_edge_attributes(graph, angle_dict, BRANCH_ANGLE_EDGE_KEY)
-    return graph
+    nx.set_edge_attributes(graph, angle_dict, BRANCH_ANGLE_JUNCTION_EDGE_KEY)
+    return graph, sample_positions_list
 
-
+@angle_metric
 def compute_rotation_angle(graph: nx.DiGraph):
     """Calculates the rotation angle for each edge in the graph.
 
@@ -259,8 +317,65 @@ def compute_rotation_angle(graph: nx.DiGraph):
     nx.set_edge_attributes(graph, rotation_angle_dict, ROTATION_ANGLE_EDGE_KEY)
 
     return graph
+@angle_metric
+def compute_rotation_angle_parent_vector_daughter_plane(graph: nx.DiGraph):
+    """Calculates the rotation angle between the parent vector and the daughter plane.
+
+    Compute the rotation angle between the parent vector
+    and the plane defined by the edge and its sister.
+    The edge attribute is defined in the
+    ROTATION_ANGLE_EDGE_KEY constant.
+    The input graph should have the following attributes:
+    - NODE_COORDINATE_KEY: The node coordinates
+    - SISTER_EDGE_KEY: The sister edge
+    - Directed graph with the correct orientation
+    - Strictly dichotomous tree
+
+    Parameters
+    ----------
+    graph : nx.DiGraph
+        The input graph
+    """
+    rotation_angle_dict = {}
+    graph = graph.copy()
+    node_coord = nx.get_node_attributes(graph, NODE_COORDINATE_KEY)
+    for edge in graph.edges():
+        parent = list(graph.in_edges(edge[0]))
+
+        sister = None
+        if SISTER_EDGE_KEY in graph.edges[edge]:
+            sister = graph.edges[edge][SISTER_EDGE_KEY]
+
+        if not parent or not sister:
+            continue
+        parent = parent[0]
 
 
+
+        if isinstance(sister[0], list):
+            sister = tuple(sister[0])
+
+        parent_vector = node_coord[parent[1]] - node_coord[parent[0]]
+        parent_vector_unit = unit_vector(parent_vector)
+
+        edge_plane = [node_coord[edge[0]], node_coord[edge[1]], node_coord[sister[1]]]
+        if  edge_plane:
+
+            normal_edge = get_normal_of_plane(
+                edge_plane[0], edge_plane[1], edge_plane[2]
+            )
+            rotation_angle = np.arccos(np.dot(parent_vector_unit,
+                                              unit_vector(normal_edge)))
+            # if rotation_angle > np.pi / 2:
+            #     rotation_angle = np.pi - rotation_angle
+            rotation_angle_dict[edge] = rad2deg(rotation_angle)
+
+    nx.set_edge_attributes(graph, rotation_angle_dict, ROTATION_ANGLE_VECTOR_EDGE_KEY)
+
+    return graph
+
+
+@angle_metric
 def compute_sibling_angle(graph: nx.DiGraph):
     """Calculates the sibling angle for each edge in the graph.
 
@@ -291,7 +406,10 @@ def compute_sibling_angle(graph: nx.DiGraph):
     # keep only one sister pair as they both have the same angle
     unique_pairs = set()
     for pair in sister_pairs:
-        if isinstance(pair[0][0], list) or isinstance(pair[1][0], list):
+        if any(
+            isinstance(x, list)
+            for x in (pair[0][0], pair[1][0], pair[1], pair[0])
+        ):
             continue
         pair = tuple(sorted(pair))
         unique_pairs.add(pair)
@@ -403,3 +521,109 @@ def compute_surface_normals_and_angles(
         skeleton.graph = graph
 
     return list_dict_normal_dicts, surface_stage_dict
+
+
+def compute_hc(graph: nx.DiGraph,
+               diameter_key: str = DIAMETER_KEY,
+               tissue_thickness_key: str = TISSUE_THICKNESS_KEY):
+    """
+    Compute Horsfield-Cummings law metrics for skeleton graph edges.
+
+    Calculates diameter ratios and Horsfield-Cummings branching angles
+    based on parent-child and sister branch relationships. Requires the
+    edge attributes for diameter, tissue thickness, parent edge, and sister edge.
+
+    Two ratios are computed:
+    - h: diameter ratio of branch to parent branch
+    - h_total: total diameter ratio including tissue thickness
+        The Horsfield-Cummings metrics (hc and hc_total) and their corresponding
+    angles (hc_theta and hc_total_theta) are also computed.
+
+    Horsfield-Cummings is defined as:
+        hc = 0.5 * ((1 + h**4 - h_sister**4) / h**2)
+        hc_total = 0.5 * ((1 + h_total**4 - h_total_sister**4) / h_total**2)
+
+    Parameters
+    ----------
+    graph : SkeletonGraph
+        The input skeleton graph.
+    diameter_key : str
+        The edge attribute key for diameter.
+    tissue_thickness_key : str
+        The edge attribute key for tissue thickness.
+
+    """
+    # Extract edge attributes
+    diameter_dict = nx.get_edge_attributes(graph, diameter_key)
+    tissue_thickness_dict = nx.get_edge_attributes(graph, tissue_thickness_key)
+    parent_edge_dict = nx.get_edge_attributes(graph, PARENT_EDGE_KEY)
+    sister_edge_dict = nx.get_edge_attributes(graph, SISTER_EDGE_KEY)
+
+    # Initialize result dictionaries
+    results = {
+        'parent_diameter': {},
+        'sister_diameter': {},
+        'hc': {},
+        'hc_total': {},
+        'hc_theta': {},
+        'hc_total_theta': {},
+    }
+
+    h_dict = {}
+    h_total_dict = {}
+    h_sister_dict = {}
+    h_total_sister_dict = {}
+
+    # Process each edge
+    for edge in graph.edges():
+        diameter = diameter_dict.get(edge)
+        tissue_thickness = tissue_thickness_dict.get(edge)
+        total_diameter = diameter + tissue_thickness
+        # Process parent relationship
+        parent_edge = parent_edge_dict.get(edge)
+        if parent_edge:
+            parent_edge = tuple(parent_edge)
+            parent_diameter = diameter_dict.get(parent_edge[0])
+            parent_tissue_thickness = tissue_thickness_dict.get(parent_edge[0])
+            parent_total_diameter = parent_diameter + parent_tissue_thickness
+            results['parent_diameter'][edge] = parent_diameter
+            h_dict[edge] = diameter / parent_diameter
+            h_total_dict[edge] = total_diameter / parent_total_diameter
+        # Process sister relationship
+        sister_edge = sister_edge_dict.get(edge)
+        if sister_edge and isinstance(sister_edge[0], int):
+            sister_edge = tuple(sister_edge)
+            sister_diameter = diameter_dict.get(sister_edge)
+            sister_tissue_thickness = tissue_thickness_dict.get(sister_edge)
+            sister_total_diameter = sister_diameter + sister_tissue_thickness
+            results['sister_diameter'][edge] = sister_diameter
+            parent_diameter = results['parent_diameter'].get(edge)
+            if parent_diameter is not None:
+                parent_tissue_thickness = tissue_thickness_dict.get(
+                    next(iter(parent_edge_dict.get(edge)))
+                    )
+                parent_total_diameter = parent_diameter + parent_tissue_thickness
+                h_sister_dict[edge] = sister_diameter / parent_diameter
+                h_total_sister_dict[edge] = sister_total_diameter/parent_total_diameter
+
+        # Calculate hc metrics
+        if edge in h_sister_dict:
+            h = h_dict[edge]
+            h_sister = h_sister_dict[edge]
+            h_total = h_total_dict[edge]
+            h_total_sister = h_total_sister_dict[edge]
+
+            # Compute hc and hc_total
+            hc = 0.5 * ((1 + h**4 - h_sister**4) / h**2)
+            hc_total = 0.5 * ((1 + h_total**4 - h_total_sister**4) / h_total**2)
+
+            results['hc'][edge] = hc
+            results['hc_total'][edge] = hc_total
+            results['hc_theta'][edge] = np.rad2deg(np.arccos(hc))
+            results['hc_total_theta'][edge] = np.rad2deg(np.arccos(hc_total))
+
+    # Set all computed attributes on the graph
+    for attr_name, attr_dict in results.items():
+        nx.set_edge_attributes(graph, attr_dict, attr_name)
+
+    return graph
